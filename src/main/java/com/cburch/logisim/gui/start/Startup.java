@@ -14,6 +14,7 @@ import static com.cburch.logisim.gui.Strings.S;
 import com.cburch.logisim.Main;
 import com.cburch.logisim.file.LoadFailedException;
 import com.cburch.logisim.file.Loader;
+import com.cburch.logisim.file.LogisimFileActions;
 import com.cburch.logisim.fpga.download.Download;
 import com.cburch.logisim.fpga.file.BoardReaderClass;
 import com.cburch.logisim.generated.BuildInfo;
@@ -32,6 +33,7 @@ import com.cburch.logisim.proj.Project;
 import com.cburch.logisim.proj.ProjectActions;
 import com.cburch.logisim.std.base.BaseLibrary;
 import com.cburch.logisim.std.gates.GatesLibrary;
+import com.cburch.logisim.util.JFileChoosers;
 import com.cburch.logisim.util.LineBuffer;
 import com.cburch.logisim.util.LocaleManager;
 import com.cburch.logisim.util.MacCompatibility;
@@ -41,6 +43,9 @@ import java.awt.Toolkit;
 import java.awt.event.AWTEventListener;
 import java.awt.event.ContainerEvent;
 import java.io.File;
+import java.io.FilenameFilter;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -757,6 +762,11 @@ public class Startup implements AWTEventListener {
     System.exit(-1);
   }
 
+  private static String getProgramDirectory() {
+    var pathOfMainClass = new File(Main.class.getProtectionDomain().getCodeSource().getLocation().getPath());
+    return URLDecoder.decode(pathOfMainClass.getParentFile().getAbsolutePath(), StandardCharsets.UTF_8);
+  }
+
   private void doOpenFile(File file) {
     if (initialized) {
       ProjectActions.doOpen(null, null, file);
@@ -883,6 +893,10 @@ public class Startup implements AWTEventListener {
       System.exit(-1);
     }
 
+    // Load in any user-defined default circuit files
+    var defaultLibraries = templLoader.loadCustomStartupLibraries(
+            getProgramDirectory() + File.separator + "logisim-defaults");
+
     // load in template
     loadTemplate(templLoader, templFile, templEmpty);
 
@@ -917,9 +931,84 @@ public class Startup implements AWTEventListener {
     // use that as the file to open now.
     initialized = true;
 
+    // Check for unnamed autosaves here and allow to save them and/or open them again
+    if (testVector == null && testCircPathInput == null) {
+      // get list of all unnamed autosave files
+      final var autosaves = new File(System.getProperty("user.home")).listFiles(
+            new FilenameFilter() {
+              @Override
+              public boolean accept(File dir, String name) {
+                return name.startsWith(Loader.LOGISIM_UNNAMED_AUTOSAVE_PREFIX)
+                    && name.endsWith(Loader.LOGISIM_UNNAMED_AUTOSAVE_SUFFIX);
+              }
+            }
+          );
+
+      // Go over all autosaves to select what to do with each
+      for (final var autosave : autosaves) {
+        boolean retry = false;
+        do {
+          retry = false;
+          // Create a option dialog to decide what to do with the autosave
+          final var options = new String[] {
+              S.get("saveOption"),
+              S.get("saveAndLoadOption"),
+              S.get("discardOption")};
+          final var option = OptionPane.showOptionDialog(monitor,
+              String.format(S.get("contentHandleAutosave"), autosave.getName()),
+              S.get("titleHandleAutosave"),
+              JOptionPane.DEFAULT_OPTION,
+              JOptionPane.QUESTION_MESSAGE,
+              null,
+              options,
+              options[0]);
+          // If the dialog is closed, ignore this file this time
+          if (option == JOptionPane.CLOSED_OPTION) {
+            continue;
+          }
+          if (option == 2) { // If delete was selected, delete it
+            autosave.delete();
+          } else { // Else first open a JFileChooser to select the save location
+            final var chooser = JFileChoosers.createAt(new File(System.getProperty("user.home")));
+            chooser.setFileFilter(Loader.LOGISIM_FILTER);
+            final var fileRes = chooser.showSaveDialog(monitor);
+            // If file selection is aborted prompt again
+            if (fileRes != JFileChooser.APPROVE_OPTION) {
+              retry = true;
+              continue;
+            }
+            // get the selected File, and check if it exists
+            final var file = chooser.getSelectedFile();
+            if (file.exists()) { // If it exists, ask if it should be overwritten
+              var confirm = OptionPane.showConfirmDialog(
+                  monitor,
+                  S.get("confirmOverwriteMessage"),
+                  S.get("confirmOverwriteTitle"),
+                  OptionPane.YES_NO_OPTION);
+              // If file shouldn't be overwritten prompt again
+              if (confirm != OptionPane.YES_OPTION) {
+                retry = true;
+                continue;
+              }
+              // If file should be overwritten, delete it to make sure moving works on all systems
+              file.delete();
+            }
+            if (!autosave.renameTo(file)) { // Check if rename works, if not prompt again
+              retry = true; // This should only fail on windows when moving to a different drive
+              continue;
+            }
+            if (option == 1) { // If save and load add the file to the loading queue after saving
+              filesToOpen.add(file);
+            }
+          }
+        } while (retry);
+      }
+    }
+
     // load file
+    Project proj = null;
     if (filesToOpen.isEmpty()) {
-      final var proj = ProjectActions.doNew(monitor);
+      proj = ProjectActions.doNew(monitor);
       proj.setStartupScreen(true);
       if (showSplash) {
         monitor.close();
@@ -927,7 +1016,6 @@ public class Startup implements AWTEventListener {
     } else {
       var numOpened = 0;
       var first = true;
-      Project proj;
       for (final var fileToOpen : filesToOpen) {
         try {
           if (testVector != null) {
@@ -970,6 +1058,9 @@ public class Startup implements AWTEventListener {
       }
       if (numOpened == 0) System.exit(-1);
     }
+
+    if (proj != null)
+      proj.doAction(LogisimFileActions.loadLibraries(defaultLibraries, proj.getLogisimFile()));
 
     for (final var fileToPrint : filesToPrint) {
       doPrintFile(fileToPrint);

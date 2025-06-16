@@ -10,11 +10,12 @@
 package com.cburch.logisim.data;
 
 import com.cburch.logisim.prefs.AppPreferences;
+import com.cburch.logisim.circuit.CircuitWires.BusConnection;
 import com.cburch.logisim.util.Cache;
 import java.awt.Color;
 import java.util.Arrays;
 
-public class Value {
+public final class Value {
 
   private static Value create(int width, long error, long unknown, long value) {
     if (width == 0) {
@@ -30,10 +31,7 @@ public class Value {
       unknown = unknown & mask & ~error;
       value = value & mask & ~unknown & ~error;
 
-      var hashCode = width;
-      hashCode = 31 * hashCode + (int) (error ^ (error >>> 32));
-      hashCode = 31 * hashCode + (int) (unknown ^ (unknown >>> 32));
-      hashCode = 31 * hashCode + (int) (value ^ (value >>> 32));
+      final var hashCode = Value.hashcode(width, error, unknown, value);
       Object cached = cache.get(hashCode);
       if (cached != null) {
         Value val = (Value) cached;
@@ -46,6 +44,20 @@ public class Value {
       cache.put(hashCode, ret);
       return ret;
     }
+  }
+
+  public static Value create_unsafe(int width, long error, long unknown, long value) {
+    int hashCode = Value.hashcode(width, error, unknown, value);
+    Object obj = cache.get(hashCode);
+    if (obj != null) {
+      Value val = (Value) obj;
+      if (val.value == value && val.width == width && val.error == error && val.unknown == unknown) {
+        return val;
+      }
+    }
+    Value ret = new Value(width, error, unknown, value);
+    cache.put(hashCode, ret);
+    return ret;
   }
 
   public static Value create(Value[] values) {
@@ -163,6 +175,10 @@ public class Value {
     return 10;
   }
 
+  public static Value repeat(Value base, BitWidth width) {
+    return repeat(base, width.getWidth());
+  }
+
   public static Value repeat(Value base, int bits) {
     if (base.getWidth() != 1) {
       throw new IllegalArgumentException("first parameter must be one bit");
@@ -174,6 +190,14 @@ public class Value {
       Arrays.fill(ret, base);
       return create(ret);
     }
+  }
+
+  private static int hashcode(int width, long error, long unknown, long value) {
+    var hashCode = width;
+    hashCode = 31 * hashCode + (int) (error ^ (error >>> 32));
+    hashCode = 31 * hashCode + (int) (unknown ^ (unknown >>> 32));
+    hashCode = 31 * hashCode + (int) (value ^ (value >>> 32));
+    return hashCode;
   }
 
   public static char TRUECHAR = AppPreferences.TRUE_CHAR.get().charAt(0);
@@ -267,14 +291,48 @@ public class Value {
       if (this == UNKNOWN) return other;
       if (other == UNKNOWN) return this;
       return ERROR;
-    } else {
+    } else if (this.width == other.width) {
       long disagree = (this.value ^ other.value) & ~(this.unknown | other.unknown);
+      return Value.create(
+          width,
+          this.error | other.error | disagree,
+          this.unknown & other.unknown,
+          this.value | other.value);
+    } else {
+      long thisKnown = ~this.unknown & (this.width == 64 ? -1 : ~(-1 << this.width));
+      long otherKnown = ~other.unknown & (other.width == 64 ? -1 : ~(-1 << other.width));
+      long disagree = (this.value ^ other.value) & thisKnown & otherKnown;
       return Value.create(
           Math.max(this.width, other.width),
           this.error | other.error | disagree,
-          this.unknown & other.unknown,
-          (this.value & ~this.unknown) | (other.value & ~other.unknown));
+          ~thisKnown & ~otherKnown,
+          this.value | other.value);
     }
+  }
+
+  public static Value combineLikeWidths(int width, BusConnection[] vals) { // all widths must match
+    int n = vals.length;
+    for (int i = 0; i < n; i++) {
+      Value v = vals[i].drivenValue;
+      if (v != null && v != NIL) {
+        long error = v.error;
+        long unknown = v.unknown;
+        long value = v.value;
+        for (int j = i + 1; j < n; j++) {
+          v = vals[j].drivenValue;
+          if (v == null || v == NIL) continue;
+          if (v.width != width) {
+            throw new IllegalArgumentException("INTERNAL ERROR: mismatched widths in Value.combineLikeWidths");
+          }
+          long disagree = (value ^ v.value) & ~(unknown | v.unknown);
+          error |= v.error | disagree;
+          unknown &= v.unknown;
+          value |= v.value;
+        }
+        return Value.create(width, error, unknown, value);
+      }
+    }
+    return Value.createUnknown(BitWidth.create(width));
   }
 
   /**
@@ -355,11 +413,7 @@ public class Value {
 
   @Override
   public int hashCode() {
-    var ret = width;
-    ret = 31 * ret + (int) (error ^ (error >>> 32));
-    ret = 31 * ret + (int) (unknown ^ (unknown >>> 32));
-    ret = 31 * ret + (int) (value ^ (value >>> 32));
-    return ret;
+    return Value.hashcode(width, error, unknown, value);
   }
 
   public boolean isErrorValue() {
@@ -545,98 +599,16 @@ public class Value {
 
   public float toFloatValueFromFP16() {
     if (error != 0 || unknown != 0 || width != 16) return Float.NaN;
-    // TODO: can replace fp16Tofp32_raw() with Float.float16ToFloat() in Java 20 or later
-    return Float.intBitsToFloat(fp16Tofp32_raw((int) value));
+    return Float.float16ToFloat((short) value);
   }
 
-  /**
-   * TODO: This function can be replaced with Float.Float.float16ToFloat() in Java 20 or later
-   */
-  public static int fp16Tofp32_raw(int val) {
-    final var oldExp = ((val >> 10) & 0b011111);
-    final var oldFraction = (val & 0b0000001111111111);
-    final var isEven = (val & 0b1000000000000000) == 0;
-    // check for zeros
-    if (oldFraction == 0 && oldExp == 0) return isEven ? 0x00000000 : 0x80000000;
-    // figure out how much the exponent needs adjusted
-    var expAdjustment = 0;
-    // calculate adjustment if subnormal number
-    if (oldExp == 0 && oldFraction != 0) expAdjustment = Integer.numberOfLeadingZeros(oldFraction) - 21;
-    // get the new exponent while checking to see if is inf or NaN
-    var newExp = (oldExp == 0b11111) ? 0b11111111 : (oldExp - 15 + 127 - ((expAdjustment == 0) ? 0 : (expAdjustment - 1)));
-    // start putting together the float
-    // add the sign first
-    var out = isEven ? 0 : 0x80000000;
-    // add the exponent
-    out |= newExp << 23;
-    // add the fractional part accounting for any subnormal corrections
-    out |= (oldFraction << (13 + expAdjustment)) & 0x007FFFFF;
-    // correct for NaNs
-    if (oldExp == 0b11111 && oldFraction != 0) out |= 0x0400000;
-    return out;
-  }
-
-  /**
-   * TODO: This function can be replaced with Float.Float.floatToFloat16() in Java 20 or later
-   */
-  public static int fp32Tofp16_raw(int val) {
-    // get the sign
-    final var isEven = (val & 0x80000000) == 0;
-    // look at the exponent
-    final var oldExp = ((val >> 23) & 0x0FF) - 127;
-    // get the fractional component
-    final var oldFraction = (val & 0x007FFFFF);
-    // check for numbers that are too large or NaN
-    if (oldExp > 15) {
-      if (oldExp == 128 && oldFraction != 0) return (isEven ? 0x7E00 : 0xFE00) | (oldFraction >> 13); //NaN
-      else return isEven ? 0x7C00 : 0xFC00; //Inf
-    }
-    // check for numbers that are too small and will be zero
-    if (oldExp < -25) return isEven ? 0x0000 : 0x8000;
-    // figure out wht the 16bit exponent will be
-    final var isSubnormalNumber = oldExp <= -15;
-    var newExp = oldExp;
-    if (isSubnormalNumber) newExp = -15;
-    else if (oldExp == 127) newExp = 15; //NaN
-    // get the fraction with the hidden bit
-    var fraction = oldFraction | 0x00800000;
-    // handle numbers that will be subnormal at 16 bits
-    if (isSubnormalNumber) {
-      final var fractionShift = -(oldExp + 14); //right shift amount fo fraction
-      // checking for rounding (round to nearest, ties to even)
-      final var GRS = fraction & (0x1FFFFFFF >> (16 - fractionShift));
-      if ((GRS > (0x1000 << fractionShift)) | (GRS == (0x1000 << fractionShift) & (fraction & (0x2000 << fractionShift)) != 0)) {
-        // need to round up
-        fraction = (fraction >> (13 + fractionShift)) + 1;
-        if (fraction >= 0x0400) {
-          // need to adjust exponent, but there is only one possibility
-          return isEven ? 0x0400 : 0x8400;
-        }
-      } else {
-        fraction = fraction >> (13 + fractionShift);
-      }
-    } else { // handle numbers that will be normal at 16 bits
-      // check for rounding (round to nearest, ties to even)
-      final var GRS = fraction & 0x1FFF;
-      if ((GRS > 0x1000) | (GRS == 0x1000 & (fraction & 0x2000) != 0)) {
-        // need to round up
-        fraction = (fraction >> 13) + 1;
-        if (fraction >= 0x0800) {
-          // need to adjust exponent
-          if (newExp == 15) return isEven ? 0x7C00 : 0xFC00; //rounded to infinity
-          else if (newExp <= 14) newExp++;
-          // fix the fractional component
-          fraction = fraction >> 1;
-        }
-      } else {
-        fraction = fraction >> 13;
-      }
-    }
-    // assemble
-    var out = isEven ? 0x0000 : 0x8000;
-    out |= (newExp + 15) << 10;
-    out |= fraction & 0x03FF;
-    return out & 0xFFFF;
+  public String toStringFromFloatValue() {
+    return switch (getWidth()) {
+      case 16 -> String.format("%.4g", toFloatValueFromFP16());
+      case 32 -> Float.toString(toFloatValue());
+      case 64 -> Double.toString(toDoubleValue());
+      default -> "NaN";
+    };
   }
 
   public String toOctalString() {
@@ -703,6 +675,41 @@ public class Value {
           this.error | other.error | this.unknown | other.unknown,
           0,
           this.value ^ other.value);
+    }
+  }
+
+  public static boolean equal(Value a, Value b) {
+    if ((a == null || a == Value.NIL) && (b == null || b == Value.NIL)) {
+      return true; // both are effectively NIL
+    }
+    if (a != null && b != null && a.equals(b)) {
+      return true; // both are same non-NIL value
+    }
+    return false;
+  }
+
+  public Value pullTowardsBits(Value other) {
+    // wherever this is unknown, use other's value for that bit instead
+    if (width <= 0 || unknown == 0 || other.width <= 0) return this;
+    long e = error | (unknown & other.error);
+    long v = value | (unknown & other.value);
+    long u = unknown & (other.unknown | (other.width == 64 ? 0 : (-1L << other.width)));
+    return Value.create(width, e, u, v);
+  }
+
+  public Value pullEachBitTowards(Value bit) {
+    // wherever this is unknown, use bit instead
+    if (width <= 0 || unknown == 0 || bit.width <= 0) return this;
+    if (bit == ERROR) {
+      return Value.create(width, error | unknown, 0, value);
+    } else if (bit == TRUE) {
+      return Value.create(width, error, 0, value | unknown);
+    } else if (bit == FALSE) {
+      return Value.create(width, error, 0, value | 0);
+    } else if (bit == UNKNOWN) {
+      return this;
+    } else {
+      throw new IllegalArgumentException("pull value must be 1, 0, X, or E");
     }
   }
 }

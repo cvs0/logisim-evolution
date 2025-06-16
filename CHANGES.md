@@ -3,6 +3,38 @@
 # Changes #
 
 * @dev (????-??-??)
+  * Updated VHDL and created Verilog generator for RAM component with byte-enables
+  * Added VHDL and Verilog for the RAM component with line-enables
+  * fixed clasic appearance shift-register bug
+  * Added automatic custom Logisim library loading at startup.
+    * Created unit tests for loading custom Logisim libraries at startup.
+    * Updated documentation for the automatic loading of custom Logisim libraries.
+  * New take on project export/import. A zip-file is generated which can include a user provided "README.md".
+  * Added Telnet component.
+  * Added Metal graphics acceleration option.
+  * Added option to hide/show toolbar
+  * Improved drawing appearance.
+    * Fixed TTY appearance bug while changing various zoom levels.
+    * Corrected appearance of NOT gates in TikZ/SVG image export.
+    * Corrected disjoint corners in arrow-style Pins.
+    * Improved output of rectangles with rounded corners in TikZ image export.
+  * Fixed Undo/Redo issues.
+  * Fixed Power-on-Reset propagation issue.
+  * Redesigned simulation engine to fix synchronization issues and increase speed.
+    * Fixed synchronization and efficiency issues in wires and propagation.
+    * Fixed synchronization and efficiency issues in propagation listeners.
+    * Limited redraws to about 20 frames per second to reduce overhead.
+    * Allows users to choose a simulation queue, which changes the efficiency of the simulator depending on circuit design.
+  * Simplified Type and Behavior attributes of Pins.
+    * This change will break circuits with input pins that need to pull floating values to 0 but do not
+      have the Pull Down setting. To fix it, set the Behavior attribute to Pull Down.
+    * Updated Pin documentation.
+  * Subcircuits with clock input(s) are now drawn with a clock symbol.
+  * Added TTL 74194: 4-bit bidirectional universal shift register.
+
+* v3.9.0 (2024-08-15)
+  * Updated Java requirement to Java 21.
+  * Added an autosave feature along with preferences for it.
   * Added a new preference to allow the user to choose the action keys for many functions.
   * Changed RAM default output from error to undefined [#1747]
   * Added support for scanning 7-segment display on FPGA-boards
@@ -32,6 +64,7 @@
   * Added TTL 74541: Octal buffers with three-state outputs
   * Added TTL 74670: 4-by-4 register file with three-state outputs
   * Added 16 bit floating point support for floating point arithmetic
+  * Fixed the problem of keys getting assigned to focusing on the cell of the table in "properties" section along with its actual intent
 
 * v3.8.0 (2022-10-02)
   * Added reset value attribute to input pins
@@ -88,6 +121,7 @@
   * Added a setting to select lower- or upper-case VHDL keywords.
   * Added project export feature.
   * Cleaned-up the written .circ file.
+  * Cleaned-up the library tree of loaded projects.
 
 * v3.6.1 (2021-09-27)
   * Fixed bug in LED-array

@@ -38,7 +38,7 @@ class WindowOptions extends OptionsPanel {
   private final PrefBoolean[] checks;
   private final PrefOptionList canvasPlacement;
   private final PrefOptionList toolbarPlacement;
-  
+
   private final JButton resetWindowLayoutButton;
   private final ColorChooserButton canvasBgColor;
   private final JLabel canvasBgColorTitle;
@@ -50,6 +50,8 @@ class WindowOptions extends OptionsPanel {
   private final JLabel gridZoomedDotColorTitle;
   private final ColorChooserButton componentColor;
   private final JLabel componentColorTitle;
+  private final ColorChooserButton componentIconColor;
+  private final JLabel componentIconColorTitle;
   private final JButton gridColorsResetButton;
 
   private final ZoomSlider zoomValue;
@@ -63,7 +65,7 @@ class WindowOptions extends OptionsPanel {
   private final LookAndFeelInfo[] lookAndFeelInfos;
   private JPanel previewPanel;
   private int index = 0;
-    
+
   protected final String cmdResetWindowLayout = "reset-window-layout";
   protected final String cmdResetGridColors = "reset-grid-colors";
   protected final String cmdSetAutoScaleFactor = "set-auto-scale-factor";
@@ -126,6 +128,10 @@ class WindowOptions extends OptionsPanel {
     componentColor = new ColorChooserButton(window, AppPreferences.COMPONENT_COLOR);
     panel.add(componentColorTitle);
     panel.add(componentColor);
+    componentIconColorTitle = new JLabel(S.get("windowComponentIconColor"));
+    componentIconColor = new ColorChooserButton(window, AppPreferences.COMPONENT_ICON_COLOR);
+    panel.add(componentIconColorTitle);
+    panel.add(componentIconColor);
 
     gridColorsResetButton = new JButton();
     gridColorsResetButton.addActionListener(listener);

@@ -33,6 +33,8 @@ import java.awt.Frame;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.event.ActionListener;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.util.ArrayList;
 import java.util.HashMap;
 import javax.swing.BorderFactory;
@@ -94,7 +96,7 @@ public class FpgaIoInformationSettingsDialog {
       maxY = Math.max(gbc.gridy, maxY);
     }
   }
-  
+
   private static void updateScanningRequirements(
       int nrOfDigits,
       int nrOfDecodedBits,
@@ -120,7 +122,7 @@ public class FpgaIoInformationSettingsDialog {
     NrOfPins.put(IO_ID, 0);
     var nrOfPins = 8;
     pinLabels.addAll(SevenSegment.getLabels());
-    final var nrOfControlPins = (driveMode == SevenSegmentScanningDriving.SEVEN_SEG_DECODED) 
+    final var nrOfControlPins = (driveMode == SevenSegmentScanningDriving.SEVEN_SEG_DECODED)
         ? Math.max((int) Math.ceil(Math.log(nrOfDigits) / Math.log(2.0)), nrOfDecodedBits) : nrOfDigits;
     nrOfPins += nrOfControlPins;
     final var pinName = (driveMode == SevenSegmentScanningDriving.SEVEN_SEG_DECODED) ? "A" : "Seg";
@@ -135,7 +137,7 @@ public class FpgaIoInformationSettingsDialog {
         pinLabels,
         oldLocations);
   }
-  
+
 
   private static void updateLedArrayRequirements(
       int nrOfRows,
@@ -275,7 +277,7 @@ public class FpgaIoInformationSettingsDialog {
       rectPanel.add(rectLocations.get(gbc.gridy), gbc);
     return rectPanel;
   }
-  
+
   private static JComboBox<Integer> decodedBits;
   private static JLabel decodedString;
 
@@ -499,7 +501,7 @@ public class FpgaIoInformationSettingsDialog {
               BorderFactory.createLineBorder(Color.BLACK, 2, true), S.get("FpgaScanningDefinition")));
       scanningPanel.setLayout(new GridBagLayout());
       rowSize.removeAll();
-      for (var nrOfSegments = 2; nrOfSegments < 16; nrOfSegments++) 
+      for (var nrOfSegments = 2; nrOfSegments < 16; nrOfSegments++)
         rowSize.addItem(nrOfSegments);
       rowSize.setSelectedIndex(info.getNrOfRows() - 2);
       eEncoding.removeAll();
@@ -712,6 +714,13 @@ public class FpgaIoInformationSettingsDialog {
     CancelButton.addActionListener(actionListener);
     gbc.gridx = 0;
     contents.add(CancelButton, gbc);
+    // FIXME: Find better solution to handle window close button
+    selWindow.addWindowListener(new WindowAdapter() {
+      @Override
+      public void windowClosing(WindowEvent e) {
+        CancelButton.doClick();
+      }
+    });
     selWindow.add(new JScrollPane(contents));
     selWindow.pack();
     selWindow.setLocationRelativeTo(IOcomps.getParentFrame());
@@ -1087,6 +1096,13 @@ public class FpgaIoInformationSettingsDialog {
     gbc.gridy = 2;
     gbc.fill = GridBagConstraints.HORIZONTAL;
     selWindow.add(cancelButton, gbc);
+    // FIXME: Find better solution to handle window close button
+    selWindow.addWindowListener(new WindowAdapter() {
+      @Override
+      public void windowClosing(WindowEvent e) {
+        cancelButton.doClick();
+      }
+    });
 
     final var saveButton = new JButton(S.get("FpgaBoardDone"));
     saveButton.addActionListener(actionListener);

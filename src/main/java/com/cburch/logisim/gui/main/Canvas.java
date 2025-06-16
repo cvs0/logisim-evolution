@@ -57,6 +57,7 @@ import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.event.AdjustmentEvent;
@@ -106,7 +107,7 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
   private final MyViewport viewport = new MyViewport();
   private final MyProjectListener myProjectListener = new MyProjectListener();
   private final TickCounter tickCounter;
-  private final CanvasPaintThread paintThread;
+  private final CanvasPaintCoordinator paintCoordinator;
   private final CanvasPainter painter;
   private final Object repaintLock = new Object(); // for waitForRepaintDone
   private Tool dragTool;
@@ -114,15 +115,14 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
   private MouseMappings mappings;
   private CanvasPane canvasPane;
   private Bounds oldPreferredSize;
-  private volatile boolean paintDirty = false; // only for within paintComponent
-  private boolean inPaint = false; // only for within paintComponent
+  private volatile boolean inPaint = false; // only for within paintComponent
 
   public Canvas(Project proj) {
     this.proj = proj;
     this.selection = new Selection(proj, this);
     this.painter = new CanvasPainter(this);
     this.oldPreferredSize = null;
-    this.paintThread = new CanvasPaintThread(this);
+    this.paintCoordinator = new CanvasPaintCoordinator(this);
     this.mappings = proj.getOptions().getMouseMappings();
     this.canvasPane = null;
     this.tickCounter = new TickCounter();
@@ -147,7 +147,6 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
     AppPreferences.SHOW_TICK_RATE.addPropertyChangeListener(myListener);
     AppPreferences.CANVAS_BG_COLOR.addPropertyChangeListener(myListener);
     loadOptions(options);
-    paintThread.start();
   }
 
   public static boolean autoZoomButtonClicked(final Dimension sz,
@@ -266,7 +265,7 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
   }
 
   public void closeCanvas() {
-    paintThread.requestStop();
+    // paintCoordinator.requestStop();
   }
 
   private void completeAction() {
@@ -276,7 +275,7 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
     // will (if needed) eventually, fire a propagateCompleted event, which will
     // cause a repaint. If not in autoPropagate mode, do the repaint here
     // instead.
-    if (!proj.getSimulator().nudge()) paintThread.requestRepaint();
+    if (!proj.getSimulator().nudge()) paintCoordinator.requestRepaint();
   }
 
   public void computeSize(final boolean immediate) {
@@ -462,15 +461,6 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
     return pane == null ? 1.0 : pane.getZoomFactor();
   }
 
-  boolean ifPaintDirtyReset() {
-    if (paintDirty) {
-      paintDirty = false;
-      return false;
-    } else {
-      return true;
-    }
-  }
-
   boolean isPopupMenuUp() {
     return myListener.menuOn;
   }
@@ -485,11 +475,14 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
 
   @Override
   public void localeChanged() {
-    paintThread.requestRepaint();
+    paintCoordinator.requestRepaint();
   }
 
   @Override
   public void paintComponent(final Graphics g) {
+    // Also update register values showing in the state registers tab
+    getProject().getFrame().getRegTabContent().writeValuesToLabels();
+
     if (AppPreferences.AntiAliassing.getBoolean()) {
       final var g2 = (Graphics2D) g;
       g2.setRenderingHint(
@@ -497,33 +490,19 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
       g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
     }
 
-    inPaint = true;
+    inPaint = true; // volatile
     try {
       super.paintComponent(g);
-      boolean clear = false;
-      do {
-        if (clear) {
-          /* Kevin Walsh:
-           * Clear the screen so we don't get
-           * artifacts due to aliasing (e.g. where
-           * semi-transparent (gray) pixels on the
-           * edges of a line turn would darker if
-           * painted a second time.
-           */
-          g.setColor(Color.WHITE);
-          g.fillRect(0, 0, getWidth(), getHeight());
-        }
-        clear = true;
-        painter.paintContents(g, proj);
-      } while (paintDirty);
+      painter.paintContents(g, proj);
       if (canvasPane == null) {
         viewport.paintContents(g);
       }
     } finally {
-      inPaint = false;
       synchronized (repaintLock) {
+        inPaint = false;
         repaintLock.notifyAll();
       }
+      paintCoordinator.repaintCompleted();
     }
   }
 
@@ -542,15 +521,6 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
   @Override
   public void recomputeSize() {
     computeSize(true);
-  }
-
-  @Override
-  public void repaint() {
-    if (inPaint) {
-      paintDirty = true;
-    } else {
-      super.repaint();
-    }
   }
 
   @Override
@@ -709,6 +679,21 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
     updateArrows();
   }
 
+  private void doZoom(Point mouseLocation, boolean zoomIn) {
+    var zoomControl = proj.getFrame().getZoomControl();
+    if (zoomIn) {
+      zoomControl.zoomIn();
+    } else {
+      zoomControl.zoomOut();
+    }
+    if (mouseLocation != null) {
+      final var rect = getViewableRect();
+      final var zoom = proj.getFrame().getZoomModel().getZoomFactor();
+      setHorizontalScrollBar((int) ((mouseLocation.getX() - rect.width / 2) * zoom));
+      setVerticalScrollBar((int) ((mouseLocation.getY() - rect.height / 2) * zoom));
+    }
+  }
+
   private class MyListener
       implements BaseMouseInputListenerContract,
           KeyListener,
@@ -736,6 +721,27 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
     //
     @Override
     public void keyPressed(KeyEvent e) {
+      if (e.isControlDown()) { // If CTRL is pressed, check for + or -
+        final var ml = Canvas.this.getMousePosition(); // Determine mouse location
+        if (ml != null) { // Handle the Cursor not being on the component
+          final var oldx = ml.x;
+          final var oldy = ml.y;
+          final var newx = (int) Math.round(ml.getX() / getZoomFactor());
+          final var newy = (int) Math.round(ml.getY() / getZoomFactor());
+          ml.translate(newx - oldx, newy - oldy);
+        }
+        switch (e.getKeyCode()) {
+          case KeyEvent.VK_PLUS: // Accept keycode for plus on main block
+          case KeyEvent.VK_ADD: // Also accept for the plus on the num-pad
+            doZoom(ml, true);
+            return;
+          case KeyEvent.VK_MINUS: // Keycode for minus on main block
+          case KeyEvent.VK_SUBTRACT: // Keycode for minus on num-pad
+            doZoom(ml, false); // For - zoom out
+            return;
+          default: // If another key was pressed do nothing
+        }
+      }
       final var tool = proj.getTool();
       if (tool != null) {
         tool.keyPressed(Canvas.this, e);
@@ -886,19 +892,8 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
     public void mouseWheelMoved(MouseWheelEvent mwe) {
       final var tool = proj.getTool();
       if (mwe.isControlDown()) {
-        var zoomControl = proj.getFrame().getZoomControl();
-
         repairMouseEvent(mwe);
-        if (mwe.getWheelRotation() < 0) {
-          zoomControl.zoomIn();
-        } else {
-          zoomControl.zoomOut();
-        }
-        final var rect = getViewableRect();
-        final var zoom = proj.getFrame().getZoomModel().getZoomFactor();
-        setHorizontalScrollBar((int) ((mwe.getX() - rect.width / 2) * zoom));
-        setVerticalScrollBar((int) ((mwe.getY() - rect.height / 2) * zoom));
-
+        doZoom(mwe.getPoint(), mwe.getWheelRotation() < 0);
       } else if (tool instanceof PokeTool && ((PokeTool) tool).isScrollable()) {
         final var id = (mwe.getWheelRotation() < 0) ? KeyEvent.VK_UP : KeyEvent.VK_DOWN;
         final var e = new KeyEvent(mwe.getComponent(), KeyEvent.KEY_PRESSED, mwe.getWhen(), 0, id, '\0');
@@ -935,7 +930,7 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
       if (AppPreferences.GATE_SHAPE.isSource(event)
           || AppPreferences.SHOW_TICK_RATE.isSource(event)
           || AppPreferences.AntiAliassing.isSource(event)) {
-        paintThread.requestRepaint();
+        paintCoordinator.requestRepaint();
       } else if (AppPreferences.COMPONENT_TIPS.isSource(event)) {
         final var showTips = AppPreferences.COMPONENT_TIPS.getBoolean();
         setToolTipText(showTips ? "" : null);
@@ -1043,7 +1038,7 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
             state = state.getParentState();
           }
           if (state != null) {
-            getProject().setCircuitState(last.cloneState());
+            getProject().setCircuitState(last.cloneAsNewRootState());
           }
         }
       }
@@ -1085,7 +1080,7 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
           final var oldProp = oldState.getPropagator();
           final var newProp = newState.getPropagator();
           if (oldProp != newProp) {
-            tickCounter.clear();
+            tickCounter.clear(proj.getSimulator());
           }
         }
       }
@@ -1104,13 +1099,12 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
 
     @Override
     public void propagationCompleted(Simulator.Event e) {
-      paintThread.requestRepaint();
-      if (e.didTick()) waitForRepaintDone();
+      paintCoordinator.requestRepaint();
     }
 
     @Override
     public void simulatorStateChanged(Simulator.Event e) {
-      // do nothing
+      paintCoordinator.requestRepaint();
     }
 
     @Override
@@ -1299,7 +1293,7 @@ public class Canvas extends JPanel implements LocaleListener, CanvasPaneContents
       if (errorMessage != msg) {
         errorMessage = msg;
         errorColor = color == null ? DEFAULT_ERROR_COLOR : color;
-        paintThread.requestRepaint();
+        paintCoordinator.requestRepaint();
       }
     }
 
